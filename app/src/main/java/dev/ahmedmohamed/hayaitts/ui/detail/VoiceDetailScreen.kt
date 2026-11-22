@@ -189,7 +189,7 @@ fun VoiceDetailScreen(
                     // installed (the screen needs the JNI engine loaded).
                     if (state.isInstalled && (
                             card?.modelFamily?.supportsCloning == true ||
-                                installed?.family?.supportsCloning == true
+                                (installed?.effectiveFamily ?: installed?.family)?.supportsCloning == true
                             )
                     ) {
                         DropdownMenuItem(

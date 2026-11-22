@@ -183,8 +183,9 @@ class SherpaTtsRuntime private constructor(
                 "Voice $voiceId is not installed",
                 IllegalStateException("voice not installed"),
             )
-        require(installed.family.supportsCloning) {
-            "Family ${installed.family} does not support voice cloning"
+        val cloningFamily = runtimeFamily(installed)
+        require(cloningFamily.supportsCloning) {
+            "Family $cloningFamily does not support voice cloning"
         }
         val tts = engine(voiceId, lengthScale = 1f, noiseScale = 0.667f, noiseScaleW = 0.8f)
         val cfg = GenerationConfig(
