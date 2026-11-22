@@ -53,8 +53,9 @@ class SherpaTtsRuntime private constructor(
 
     data class SynthesisOutput(val sampleRate: Int, val samples: FloatArray)
 
-    fun sampleRateOf(voiceId: String, languageHint: String? = null): Int =
+    fun sampleRateOf(voiceId: String, languageHint: String? = null): Int = synchronized(this) {
         engine(voiceId, 1f, languageHint = languageHint).sampleRate()
+    }
 
     fun synthesize(
         voiceId: String,
@@ -66,7 +67,7 @@ class SherpaTtsRuntime private constructor(
         noiseScale: Float = 0.667f,
         noiseScaleW: Float = 0.8f,
         languageHint: String? = null,
-    ): SynthesisOutput {
+    ): SynthesisOutput = synchronized(this) {
         val tts = engine(voiceId, lengthScale, noiseScale, noiseScaleW, text, languageHint)
         // Clamp the speaker id to the model's actual range before
         // crossing the JNI boundary. Kokoro 1.1 ships ~50–100 named
@@ -134,7 +135,7 @@ class SherpaTtsRuntime private constructor(
         noiseScaleW: Float = 0.8f,
         languageHint: String? = null,
         onChunk: (FloatArray) -> Int,
-    ): SynthesisOutput {
+    ): SynthesisOutput = synchronized(this) {
         val tts = engine(voiceId, lengthScale, noiseScale, noiseScaleW, text, languageHint)
         val nSpeakers = runCatching { tts.numSpeakers() }.getOrDefault(0)
         val safeSid = if (nSpeakers > 0) sid.coerceIn(0, nSpeakers - 1) else 0
@@ -177,7 +178,7 @@ class SherpaTtsRuntime private constructor(
         sid: Int = 0,
         numSteps: Int = 8,
         onChunk: ((FloatArray) -> Int)? = null,
-    ): SynthesisOutput {
+    ): SynthesisOutput = synchronized(this) {
         val installed = installedFor(voiceId)
             ?: throw SynthesisFailure(
                 "Voice $voiceId is not installed",
@@ -237,7 +238,7 @@ class SherpaTtsRuntime private constructor(
         lengthScale: Float = 1.0f,
         noiseScale: Float = 0.667f,
         noiseScaleW: Float = 0.8f,
-    ): SynthesisOutput {
+    ): SynthesisOutput = synchronized(this) {
         require(weights.isNotEmpty()) { "Blend requires at least one (sid, weight) pair" }
         if (weights.size == 1) {
             return synthesize(
