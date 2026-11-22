@@ -122,7 +122,36 @@ class VoiceDownloadWorker(
         val voiceDirPreexisted = voiceDir.exists()
 
         var success = false
+        var preserveValidatedDir = false
         try {
+            // Recovery path: a previous attempt may have extracted and validated
+            // the model but failed while registering it in Room. Re-register the
+            // existing files first; do not download the bundle again.
+            if (voiceDir.isDirectory) {
+                val existingMissing = missingRequiredFiles(voice, voiceDir)
+                if (existingMissing.isEmpty()) {
+                    preserveValidatedDir = true
+                    val registration = runCatching {
+                        voiceRepository.markInstalled(voice, voiceDir.absolutePath)
+                    }
+                    if (registration.isFailure) {
+                        val error = registration.exceptionOrNull()
+                        log.e(error) { "Valid model files found for ${voice.id}, but Room registration failed" }
+                        return@withContext failPersisted(
+                            voice.id,
+                            "Model files are complete; registration failed: ${error?.message ?: error?.javaClass?.simpleName}",
+                        )
+                    }
+                    success = true
+                    finalFile.delete()
+                    runCatching {
+                        upsertState(voice.id, DownloadState.STATUS_DONE, 0L, 0L, null)
+                    }.onFailure { log.e(it) { "Recovered ${voice.id}, but could not update download state" } }
+                    log.i { "Recovered installed voice ${voice.id} from validated files at $voiceDir" }
+                    return@withContext Result.success()
+                }
+            }
+
             // 1. Network download with throttled progress updates.
             val totalBytes = try {
                 downloadBundle(voice, partFile)
@@ -245,10 +274,21 @@ class VoiceDownloadWorker(
                 )
             }
 
-            // 6. Persist installation before updating the separate download state.
-            // Once Room confirms the installed voice, its model directory is
-            // authoritative and must not be deleted if the history update fails.
-            voiceRepository.markInstalled(voice, voiceDir.absolutePath)
+            // 6. Preserve a fully validated extraction even if Room registration
+            // fails. A later retry can repair the Room row from these files
+            // without downloading or extracting the model again.
+            preserveValidatedDir = true
+            val registration = runCatching {
+                voiceRepository.markInstalled(voice, voiceDir.absolutePath)
+            }
+            if (registration.isFailure) {
+                val error = registration.exceptionOrNull()
+                log.e(error) { "Validated model files for ${voice.id}, but Room registration failed" }
+                return@withContext failPersisted(
+                    voice.id,
+                    "Model files are complete; registration failed: ${error?.message ?: error?.javaClass?.simpleName}",
+                )
+            }
             success = true
             finalFile.delete()
             runCatching {
@@ -277,7 +317,9 @@ class VoiceDownloadWorker(
             if (!success) {
                 partFile.takeIf { it.exists() }?.delete()
                 finalFile.takeIf { it.exists() }?.delete()
-                if (!voiceDirPreexisted) voiceDir.takeIf { it.exists() }?.deleteRecursively()
+                if (!voiceDirPreexisted && !preserveValidatedDir) {
+                    voiceDir.takeIf { it.exists() }?.deleteRecursively()
+                }
             }
             // P2: always drop the foreground notification when worker exits.
             DownloadNotifications.cancelActive(applicationContext)
