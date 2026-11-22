@@ -138,11 +138,13 @@ class VoiceDownloadWorker(
             }
 
             if (!partFile.renameTo(finalFile)) {
-                // renameTo is atomic across the same FS but can fail when the
-                // dest already exists from a previous attempt. Fall back to
-                // delete + rename.
+                // renameTo can fail when a previous archive still exists.
+                // Remove that stale target and require the second rename to
+                // succeed; never continue with a missing or stale archive.
                 finalFile.delete()
-                partFile.renameTo(finalFile)
+                if (!partFile.renameTo(finalFile)) {
+                    throw IOException("Could not move completed download into place")
+                }
             }
 
             // 2. Integrity check — hard error, no retry.
@@ -243,11 +245,19 @@ class VoiceDownloadWorker(
                 )
             }
 
-            // 6. Mark installed + done.
+            // 6. Persist installation before updating the separate download state.
+            // Once Room confirms the installed voice, its model directory is
+            // authoritative and must not be deleted if the history update fails.
             voiceRepository.markInstalled(voice, voiceDir.absolutePath)
-            upsertState(voice.id, DownloadState.STATUS_DONE, totalBytes, totalBytes, null)
-            finalFile.delete()
             success = true
+            finalFile.delete()
+            runCatching {
+                upsertState(voice.id, DownloadState.STATUS_DONE, totalBytes, totalBytes, null)
+            }.onFailure { stateError ->
+                log.e(stateError) {
+                    "Voice ${voice.id} is installed, but download state could not be marked done"
+                }
+            }
             log.i { "Voice ${voice.id} installed at $voiceDir" }
             // P2: post one-shot completion notification on the secondary
             // channel so the user gets a "Installed Amy" toast even after the
