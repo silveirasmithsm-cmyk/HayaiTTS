@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build-debug-apk:
-    name: Build debug APKs
+    name: Build and verify ARMv7 debug APK
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -43,10 +43,28 @@ jobs:
           chmod +x ./gradlew
           ./gradlew --no-daemon assembleDebug
 
-      - name: Upload debug APKs
+      - name: Verify ARMv7 APK signature and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*armeabi-v7a*.apk' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "ERROR: No armeabi-v7a APK was produced."
+            find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print
+            exit 1
+          fi
+          echo "Selected APK: $APK"
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          sha256sum "$APK" | tee app/build/outputs/apk/debug/armv7-sha256.txt
+          echo "APK_BYTES=$(stat -c%s "$APK")" | tee app/build/outputs/apk/debug/armv7-size.txt
+
+      - name: Upload ARMv7 APK only
         uses: actions/upload-artifact@v4
         with:
-          name: hayaitts-pocket-fix-debug-${{ github.sha }}
-          path: app/build/outputs/apk/debug/*.apk
+          name: hayaitts-pocket-fix-armv7-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/*armeabi-v7a*.apk
+            app/build/outputs/apk/debug/armv7-sha256.txt
+            app/build/outputs/apk/debug/armv7-size.txt
           if-no-files-found: error
           retention-days: 14
