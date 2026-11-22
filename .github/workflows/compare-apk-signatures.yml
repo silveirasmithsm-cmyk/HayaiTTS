@@ -16,10 +16,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Install apksigner
-        run: sdkmanager "build-tools;36.0.0"
+
+      - name: Install Android build tools
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort | tail -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "build-tools;36.0.0"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+
       - name: Download previous and current build artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -31,11 +36,14 @@ jobs:
           test -n "$OLD_APK" && test -n "$NEW_APK"
           echo "OLD_APK=$OLD_APK" >> "$GITHUB_ENV"
           echo "NEW_APK=$NEW_APK" >> "$GITHUB_ENV"
+          echo "Previous APK: $OLD_APK"
+          echo "Current APK: $NEW_APK"
+
       - name: Verify and compare signing certificates
         id: compare
         run: |
           set -euo pipefail
-          apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           "$apksigner" verify --print-certs "$OLD_APK" | tee old-cert.txt
           "$apksigner" verify --print-certs "$NEW_APK" | tee new-cert.txt
           OLD_FP="$(sed -n 's/.*certificate SHA-256 digest: //p' old-cert.txt | head -n 1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
@@ -48,6 +56,7 @@ jobs:
           else
             echo "RESULT=MISMATCH" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Publish comparison result
         if: always()
         run: |
