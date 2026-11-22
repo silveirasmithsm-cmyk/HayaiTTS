@@ -66,32 +66,57 @@ class VoicePreviewPlayer(
     suspend fun playSamples(samples: FloatArray, sampleRate: Int) = withContext(dispatchers.default) {
         stop()
         if (samples.isEmpty() || sampleRate <= 0) return@withContext
+
         val pcm = floatToPcm16(samples)
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build())
-            .setAudioFormat(AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .build())
-            .setBufferSizeInBytes(pcm.size.coerceAtLeast(MIN_BUFFER_BYTES))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .build()
+        val minBuffer = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val bufferBytes = maxOf(MIN_BUFFER_BYTES, minBuffer.takeIf { it > 0 } ?: MIN_BUFFER_BYTES)
+        val track = runCatching {
+            AudioTrack.Builder()
+                .setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
+                .setAudioFormat(AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build())
+                .setBufferSizeInBytes(bufferBytes)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                // Normal Android output path is more compatible for previews.
+                .build()
+        }.onFailure { log.w(it) { "Could not create AudioTrack for preview" } }
+            .getOrNull() ?: return@withContext
+
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            log.w { "AudioTrack was not initialized; state=${track.state}" }
+            runCatching { track.release() }
+            return@withContext
+        }
 
         current = track
-        track.setVolume(AudioTrack.getMaxVolume())
-        track.play()
-        runCatching {
-            track.write(pcm, 0, pcm.size)
+        try {
+            track.setVolume(AudioTrack.getMaxVolume())
+            track.play()
+            var offset = 0
+            while (offset < pcm.size && current === track) {
+                val length = min(WRITE_CHUNK_BYTES, pcm.size - offset)
+                val written = track.write(pcm, offset, length, AudioTrack.WRITE_BLOCKING)
+                if (written <= 0) throw IllegalStateException("AudioTrack.write failed: $written")
+                offset += written
+            }
             val frames = pcm.size / 2
-            val playbackMs = (frames.toLong() * 1000L / sampleRate)
+            val playbackMs = frames.toLong() * 1000L / sampleRate
             publishAmplitudeWindows(samples = samples, sampleRate = sampleRate, playbackMs = playbackMs)
+        } catch (t: Throwable) {
+            log.w(t) { "AudioTrack preview playback failed" }
+        } finally {
+            stop()
         }
-        stop()
     }
 
     fun stop() {
@@ -142,6 +167,7 @@ class VoicePreviewPlayer(
 
     companion object {
         private const val MIN_BUFFER_BYTES = 4 * 1024
+        private const val WRITE_CHUNK_BYTES = 16 * 1024
         @Suppress("unused")
         private const val LEGACY_MODE = AudioManager.STREAM_MUSIC
         private const val BAR_COUNT = 32
