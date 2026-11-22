@@ -17,11 +17,13 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install apksigner
-        run: sdkmanager "build-tools;36.0.0"
+      - name: Install Android build tools
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort | tail -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "build-tools;36.0.0"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
 
       - name: Download previous and current build artifacts
         env:
@@ -31,8 +33,7 @@ jobs:
           gh run download 45072075611 --repo "${GITHUB_REPOSITORY}" --name "hayaitts-pocket-fix-armv7-8c5ec34c5f63297a1d16c98227a46aee71bb1226" --dir new
           OLD_APK="$(find old -type f -name '*.apk' | head -n 1)"
           NEW_APK="$(find new -type f -name '*.apk' | head -n 1)"
-          test -n "$OLD_APK"
-          test -n "$NEW_APK"
+          test -n "$OLD_APK" && test -n "$NEW_APK"
           echo "OLD_APK=$OLD_APK" >> "$GITHUB_ENV"
           echo "NEW_APK=$NEW_APK" >> "$GITHUB_ENV"
           echo "Previous APK: $OLD_APK"
@@ -42,23 +43,18 @@ jobs:
         id: compare
         run: |
           set -euo pipefail
-          apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           "$apksigner" verify --print-certs "$OLD_APK" | tee old-cert.txt
           "$apksigner" verify --print-certs "$NEW_APK" | tee new-cert.txt
-          OLD_FP="$(sed -n 's/.*certificate SHA-256 digest: //p' old-cert.txt | head -n 1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
-          NEW_FP="$(sed -n 's/.*certificate SHA-256 digest: //p' new-cert.txt | head -n 1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
+          OLD_FP="$(sed -n 's/.*certificate SHA-256 digest: //p' old-cert.txt | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          NEW_FP="$(sed -n 's/.*certificate SHA-256 digest: //p' new-cert.txt | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
           echo "OLD_SHA256=$OLD_FP" >> "$GITHUB_OUTPUT"
           echo "NEW_SHA256=$NEW_FP" >> "$GITHUB_OUTPUT"
-          echo "OLD_SHA256=$OLD_FP"
-          echo "NEW_SHA256=$NEW_FP"
-          test -n "$OLD_FP"
-          test -n "$NEW_FP"
+          test -n "$OLD_FP" && test -n "$NEW_FP"
           if [ "$OLD_FP" = "$NEW_FP" ]; then
             echo "RESULT=MATCH" >> "$GITHUB_OUTPUT"
-            echo "SIGNATURE_RESULT=MATCH" >> "$GITHUB_ENV"
           else
             echo "RESULT=MISMATCH" >> "$GITHUB_OUTPUT"
-            echo "SIGNATURE_RESULT=MISMATCH" >> "$GITHUB_ENV"
           fi
 
       - name: Publish comparison result
@@ -66,10 +62,10 @@ jobs:
         run: |
           {
             echo "## APK signature comparison"
-            echo ""
+            echo
             echo "Previous certificate: ${{ steps.compare.outputs.OLD_SHA256 }}"
-            echo ""
+            echo
             echo "Current certificate: ${{ steps.compare.outputs.NEW_SHA256 }}"
-            echo ""
+            echo
             echo "Result: ${{ steps.compare.outputs.RESULT }}"
           } >> "$GITHUB_STEP_SUMMARY"
